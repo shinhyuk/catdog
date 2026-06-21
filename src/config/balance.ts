@@ -73,6 +73,22 @@ export const BALANCE = {
     MAX_SCOUTS_PER_DAY: 8,
   },
 
+  // ── 약탈/간파 시도 프로세스 (성공·실패) ─────────────────
+  raid: {
+    /** 강탈 기본 성공률 */
+    BASE_SUCCESS: 0.72,
+    /** 복수(나를 턴 적) 강탈 시 성공률 가산 */
+    REVENGE_BONUS: 0.1,
+    /** 내가 노출 상태면 성공률 감점 */
+    SELF_EXPOSED_PENALTY: 0.2,
+    /** 은신 간파 성공률 */
+    DETECT_BASE_SUCCESS: 0.6,
+    /** 실패 시 본인 노출 시간(분) */
+    FAIL_EXPOSE_MIN: 30,
+    /** "시도 중" 연출 시간(ms) */
+    ROLL_MS: 900,
+  },
+
   // ── 봇 (Phase 1 핵심) ───────────────────────────────────
   bots: {
     /** 풀 크기 */

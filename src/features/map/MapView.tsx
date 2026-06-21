@@ -5,7 +5,7 @@ import { useGame } from '../../state/store';
 import { JOB_ORDER, JOBS } from '../../data/jobs';
 import { BALANCE } from '../../config/balance';
 import { levelProgress } from '../../game/leveling';
-import { robberRaid } from '../../game/theft';
+import { robberRaid, raidSuccessChance, detectSuccessChance } from '../../game/theft';
 import type { Bot, GameState } from '../../types';
 import { destination, haversine, angleDelta, type LatLng } from './geo';
 import { useGeolocation, useCompass } from './useGeo';
@@ -31,7 +31,7 @@ function actionFor(state: GameState, bot: Bot): NearbyAction {
   if (job === 'scout') {
     const full = state.todayScouts >= BALANCE.limits.MAX_SCOUTS_PER_DAY;
     if (bot.hidden)
-      return { ...base, kind: 'detect', label: '간파', disabled: full, hint: full ? '오늘 정찰 소진' : '은신을 꿰뚫어 명단 등록' };
+      return { ...base, kind: 'detect', label: '간파', disabled: full, hint: full ? '오늘 정찰 소진' : '은신을 꿰뚫는다' };
     if (state.list.some((t) => t.botId === bot.id))
       return { ...base, kind: 'info', label: '명단에 있음', disabled: true };
     return { ...base, kind: 'register', label: '명단 등록', disabled: full, hint: full ? '오늘 정찰 소진' : '소액 절도 + 노출' };
@@ -49,22 +49,30 @@ function actionFor(state: GameState, bot: Bot): NearbyAction {
   return { ...base, kind: 'info', label: '은신 중 — 지나친다', disabled: true };
 }
 
-function playerMarkerEl(emoji: string): HTMLDivElement {
+function playerMarkerEl(emoji: string, color: string): HTMLDivElement {
   const el = document.createElement('div');
-  el.className = 'relative flex items-center justify-center';
+  el.className = 'relative flex flex-col items-center';
   el.innerHTML = `
-    <div class="absolute -top-4 h-0 w-0 border-x-[9px] border-b-[16px] border-x-transparent border-b-amber-300"></div>
-    <div class="flex h-10 w-10 items-center justify-center rounded-full border-2 border-amber-300 bg-slate-900/85 text-xl shadow-lg">${emoji}</div>`;
+    <div class="absolute -top-5 h-0 w-0 border-x-[10px] border-b-[18px] border-x-transparent border-b-amber-300 drop-shadow"></div>
+    <div class="cd-bounce flex h-14 w-14 items-center justify-center rounded-full border-[3px] border-white text-3xl shadow-xl" style="background:${color}">${emoji}</div>
+    <div class="mt-0.5 h-1.5 w-7 rounded-full bg-black/35 blur-[1px]"></div>`;
   return el;
 }
 
 function botMarkerEl(): { el: HTMLDivElement; badge: HTMLDivElement } {
   const el = document.createElement('div');
-  el.className = 'flex items-center justify-center';
+  el.className = 'cd-bot-bounce flex items-center justify-center';
   const badge = document.createElement('div');
-  badge.className = 'flex h-9 w-9 items-center justify-center rounded-full border-2 bg-slate-900/75 text-lg';
+  badge.className = 'flex h-10 w-10 items-center justify-center rounded-full border-2 bg-slate-900/75 text-xl shadow-lg';
   el.appendChild(badge);
   return { el, badge };
+}
+
+interface Attempt {
+  botId: string;
+  kind: 'raid' | 'detect';
+  phase: 'rolling' | 'success' | 'fail';
+  amount: number;
 }
 
 export default function MapView() {
@@ -80,6 +88,8 @@ export default function MapView() {
   gpsActiveRef.current = gps.active;
   const compassRef = useRef(compass.heading);
   compassRef.current = compass.heading;
+  const compassRequestRef = useRef(compass.request);
+  compassRequestRef.current = compass.request;
   const nearbyRef = useRef<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -96,13 +106,25 @@ export default function MapView() {
   const meterAcc = useRef(0);
   const stepAcc = useRef(0);
   const lastGpsPos = useRef<LatLng | null>(null);
+  const followMode = useRef(true);
+  const attemptRef = useRef<Attempt | null>(null);
 
-  const [started, setStarted] = useState(false);
   const [walking, setWalking] = useState(false);
   const [nearbyId, setNearbyId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [freeLook, setFreeLook] = useState(false);
+  const [attempt, setAttempt] = useState<Attempt | null>(null);
+  attemptRef.current = attempt;
 
   const myFaction = state.faction ?? 'dog';
+  const factionEmoji = myFaction === 'dog' ? '🐕' : '🐈';
+  const factionColor = myFaction === 'dog' ? '#c2703d' : '#8076c2';
+
+  // 마운트 시 자동 GPS 시작
+  useEffect(() => {
+    gps.start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // GPS 이동량 → 걸음 적립 (튐 필터)
   useEffect(() => {
@@ -116,9 +138,9 @@ export default function MapView() {
     lastGpsPos.current = cur;
   }, [gps.fix]);
 
-  // 지도 초기화 (시작 후 1회)
+  // 지도 초기화 (1회)
   useEffect(() => {
-    if (!started || !containerRef.current || mapRef.current) return;
+    if (!containerRef.current || mapRef.current) return;
     const init = gpsFixRef.current ?? simPos.current;
     dispPos.current = { lat: init.lat, lng: init.lng };
     const map = new maplibregl.Map({
@@ -128,17 +150,38 @@ export default function MapView() {
       zoom: G.MAP_ZOOM,
       pitch: G.MAP_PITCH,
       bearing: 0,
-      interactive: false,
       attributionControl: { compact: true },
+      dragRotate: true,
+      pitchWithRotate: true,
+      touchZoomRotate: true,
     });
+    mapRef.current = map;
+
+    // 사용자가 직접 돌리거나 옮기면 자유 시점으로
+    const toFree = () => {
+      if (followMode.current) {
+        followMode.current = false;
+        setFreeLook(true);
+      }
+    };
+    map.on('dragstart', toFree);
+    map.on('rotatestart', toFree);
+    map.on('pitchstart', toFree);
+    map.on('zoomstart', (e) => {
+      if ((e as { originalEvent?: unknown }).originalEvent) toFree();
+    });
+
     map.on('load', () => {
       mapLoaded.current = true;
-      const pel = playerMarkerEl(myFaction === 'dog' ? '🐕' : '🐈');
-      playerMarker.current = new maplibregl.Marker({ element: pel, anchor: 'center' })
+      const pel = playerMarkerEl(factionEmoji, factionColor);
+      playerMarker.current = new maplibregl.Marker({ element: pel, anchor: 'bottom' })
         .setLngLat([dispPos.current.lng, dispPos.current.lat])
         .addTo(map);
     });
-    mapRef.current = map;
+
+    // 첫 터치 때 나침반 권한 요청(iOS)
+    const onceCompass = () => compassRequestRef.current?.();
+    containerRef.current.addEventListener('pointerdown', onceCompass, { once: true });
 
     const ro = new ResizeObserver(() => map.resize());
     ro.observe(containerRef.current);
@@ -152,11 +195,9 @@ export default function MapView() {
       const fix = gpsFixRef.current;
       const usingGps = gpsActiveRef.current && !!fix;
 
-      // 방향: 나침반 > GPS 이동방향 > 유지
       const targetHeading = compassRef.current ?? fix?.heading ?? null;
       if (targetHeading != null) dispBearing.current += angleDelta(dispBearing.current, targetHeading) * 0.18;
 
-      // 시뮬 걷기 (GPS 없을 때만)
       if (simWalking.current && !usingGps) {
         const step = G.SIM_SPEED_M_PER_S * dt;
         simPos.current = destination(simPos.current, dispBearing.current, step);
@@ -164,21 +205,24 @@ export default function MapView() {
       }
 
       const target = usingGps ? { lat: fix!.lat, lng: fix!.lng } : simPos.current;
-      // 부드럽게 따라가기
-      const big = haversine(dispPos.current, target) > 60;
-      const k = big ? 1 : 0.2;
       dispPos.current = {
-        lat: dispPos.current.lat + (target.lat - dispPos.current.lat) * k,
-        lng: dispPos.current.lng + (target.lng - dispPos.current.lng) * k,
+        lat: dispPos.current.lat + (target.lat - dispPos.current.lat) * 0.25,
+        lng: dispPos.current.lng + (target.lng - dispPos.current.lng) * 0.25,
       };
 
       if (mapLoaded.current) {
-        map.jumpTo({ center: [dispPos.current.lng, dispPos.current.lat], bearing: dispBearing.current, pitch: G.MAP_PITCH });
-        playerMarker.current?.setLngLat([dispPos.current.lng, dispPos.current.lat]);
+        if (followMode.current) {
+          map.jumpTo({
+            center: [dispPos.current.lng, dispPos.current.lat],
+            bearing: dispBearing.current,
+            pitch: G.MAP_PITCH,
+            zoom: G.MAP_ZOOM,
+          });
+        }
+        playerMarker.current?.setLngLat([target.lng, target.lat]);
         syncBots(s, target);
       }
 
-      // 걸음 적립
       if (meterAcc.current > 0) {
         stepAcc.current += meterAcc.current * G.STEPS_PER_METER;
         meterAcc.current = 0;
@@ -188,8 +232,7 @@ export default function MapView() {
         }
       }
 
-      // 근처 호구
-      const near = computeNearby(s, target);
+      const near = attemptRef.current ? null : computeNearby(s, target);
       const id = near?.bot.id ?? null;
       if (id !== nearbyRef.current) {
         nearbyRef.current = id;
@@ -210,21 +253,18 @@ export default function MapView() {
       mapLoaded.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [started]);
+  }, []);
 
-  // 봇 위치 생성/갱신 + 마커 동기화
   function syncBots(s: GameState, center: LatLng) {
     const stamp = `${s.season}-${s.day}-${s.faction}-${s.bots.length}`;
     if (botGeo.current.stamp !== stamp) {
-      // 새 위치 흩뿌리기
       const pos: Record<string, LatLng> = {};
       s.bots.forEach((b, i) => {
-        const bearing = (i * 137.5 + s.day * 40) % 360; // 고르게 분산
+        const bearing = (i * 137.5 + s.day * 40) % 360;
         const dist = G.BOT_SPAWN_MIN_M + ((i * 53) % (G.BOT_SPAWN_MAX_M - G.BOT_SPAWN_MIN_M));
         pos[b.id] = destination(center, bearing, dist);
       });
       botGeo.current = { stamp, pos };
-      // 마커 재생성
       botMarkers.current.forEach((m) => m.marker.remove());
       botMarkers.current.clear();
       s.bots.forEach((b) => {
@@ -235,14 +275,13 @@ export default function MapView() {
         botMarkers.current.set(b.id, { marker, badge });
       });
     }
-    // 스타일 동기화
     s.bots.forEach((b) => {
       const entry = botMarkers.current.get(b.id);
       if (!entry) return;
       const show = s.todayJob === 'scout' || !b.hidden;
       entry.marker.getElement().style.display = show ? '' : 'none';
       const revenge = s.leaks.some((l) => l.raiderId === b.id);
-      entry.badge.style.opacity = b.hidden ? '0.5' : '1';
+      entry.badge.style.opacity = b.hidden ? '0.55' : '1';
       entry.badge.style.borderColor = revenge ? '#f43f5e' : '#fbbf24';
       entry.badge.textContent = b.hidden ? '❔' : b.faction === 'dog' ? '🐕' : '🐈';
     });
@@ -261,12 +300,9 @@ export default function MapView() {
     return best ? actionFor(s, best.bot) : null;
   }
 
-  const startGame = (withGps: boolean) => {
-    if (withGps) {
-      gps.start();
-      compass.request();
-    }
-    setStarted(true);
+  const recenter = () => {
+    followMode.current = true;
+    setFreeLook(false);
   };
 
   const toggleWalk = () => {
@@ -275,42 +311,54 @@ export default function MapView() {
     setWalking(next);
   };
 
+  const chooseJob = (id: (typeof JOB_ORDER)[number]) => {
+    if (state.todayJob) return;
+    if (confirm(`오늘은 ${JOBS[id].name}(으)로 확정한다. 하루 동안 바꿀 수 없다. 계속?`))
+      dispatch({ type: 'CHOOSE_JOB', job: id });
+  };
+
   const nearby = nearbyId ? actionFor(state, state.bots.find((b) => b.id === nearbyId)!) : null;
-  const doAction = () => {
-    if (!nearby || nearby.disabled) return;
-    if (nearby.kind === 'raid') dispatch({ type: 'RAID', botId: nearby.bot.id });
-    else if (nearby.kind === 'register' || nearby.kind === 'detect')
-      dispatch({ type: 'SCOUT_REGISTER', botId: nearby.bot.id });
+
+  const startAction = () => {
+    if (!nearby || nearby.disabled || attempt) return;
+    const bot = nearby.bot;
+    if (nearby.kind === 'register') {
+      dispatch({ type: 'SCOUT_REGISTER', botId: bot.id });
+      return;
+    }
+    if (nearby.kind !== 'raid' && nearby.kind !== 'detect') return;
+
+    const kind = nearby.kind;
+    const revenge = nearby.revenge;
+    setAttempt({ botId: bot.id, kind, phase: 'rolling', amount: 0 });
+    window.setTimeout(() => {
+      const s = stateRef.current;
+      const selfExposed = s.exposures.some((e) => e.subjectId === 'me');
+      let success: boolean;
+      let amount = 0;
+      if (kind === 'raid') {
+        success = Math.random() < raidSuccessChance({ revenge, selfExposed });
+        if (success) {
+          const combo = revenge && (s.skills['robber-force-b0'] ?? 0) > 0;
+          amount = robberRaid(bot.visibleAssets, combo).amount;
+          dispatch({ type: 'RAID', botId: bot.id });
+        } else {
+          dispatch({ type: 'RAID_FAIL', botId: bot.id });
+        }
+      } else {
+        success = Math.random() < detectSuccessChance();
+        if (success) dispatch({ type: 'SCOUT_REGISTER', botId: bot.id });
+        else dispatch({ type: 'DETECT_FAIL', botId: bot.id });
+      }
+      setAttempt({ botId: bot.id, kind, phase: success ? 'success' : 'fail', amount });
+      window.setTimeout(() => setAttempt(null), 1600);
+    }, BALANCE.raid.ROLL_MS);
   };
 
   const progress = levelProgress(state);
   const leakTotal = state.leaks.reduce((s, l) => s + (l.total - l.drained), 0);
   const exposed = state.exposures.some((e) => e.subjectId === 'me');
-
-  // ── 시작 화면 ──
-  if (!started) {
-    return (
-      <div className="fixed inset-0 mx-auto flex max-w-md flex-col items-center justify-center gap-4 bg-slate-900 px-8 text-center">
-        <div className="text-5xl">🗺️</div>
-        <h1 className="text-xl font-bold">실제 거리에서 시작</h1>
-        <p className="text-sm text-slate-400">
-          내 위치·방향을 읽어 실제 길 위에서 플레이한다. 위치 권한을 허용해줘. (iOS는 나침반 권한도 물어봄)
-        </p>
-        <button
-          onClick={() => startGame(true)}
-          className="w-full rounded-xl bg-amber-400 py-3 text-sm font-bold text-slate-900 active:scale-95"
-        >
-          📍 내 위치로 시작
-        </button>
-        <button
-          onClick={() => startGame(false)}
-          className="w-full rounded-xl border border-slate-700 py-3 text-sm font-semibold active:scale-95"
-        >
-          GPS 없이 둘러보기 (시뮬)
-        </button>
-      </div>
-    );
-  }
+  const attemptBot = attempt ? state.bots.find((b) => b.id === attempt.botId) : null;
 
   return (
     <div className="fixed inset-0 mx-auto max-w-md overflow-hidden bg-slate-900 select-none">
@@ -320,7 +368,7 @@ export default function MapView() {
       <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/60 to-transparent p-3">
         <div className="flex items-start justify-between">
           <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-black/40 px-3 py-1.5 backdrop-blur">
-            <span className="text-lg">{myFaction === 'dog' ? '🐕' : '🐈'}</span>
+            <span className="text-lg">{factionEmoji}</span>
             <div className="leading-tight">
               <div className="text-xs font-semibold">시즌 {state.season} · Day {state.day}</div>
               <div className="text-[10px] text-slate-300">Lv {state.level}{state.level >= BALANCE.MAX_LEVEL ? ' (만렙)' : ''}</div>
@@ -340,24 +388,25 @@ export default function MapView() {
         </div>
 
         <div className="mt-2 flex flex-wrap gap-2">
-          <span className={`rounded-md px-2 py-1 text-[10px] ${gps.active ? 'bg-emerald-950/80 text-emerald-200' : 'bg-slate-800/80 text-slate-300'}`}>
-            {gps.active ? '🛰️ GPS' : '🧭 시뮬'}
-          </span>
+          <span className={`rounded-md px-2 py-1 text-[10px] ${gps.active ? 'bg-emerald-950/80 text-emerald-200' : 'bg-slate-800/80 text-slate-300'}`}>{gps.active ? '🛰️ GPS' : '🧭 시뮬'}</span>
           {compass.enabled && <span className="rounded-md bg-sky-950/80 px-2 py-1 text-[10px] text-sky-200">나침반</span>}
           {leakTotal > 0 && <span className="rounded-md bg-rose-950/80 px-2 py-1 text-[10px] text-rose-200">누수 {leakTotal.toLocaleString()}</span>}
           {exposed && <span className="rounded-md bg-amber-950/80 px-2 py-1 text-[10px] text-amber-200">⚠️ 노출됨</span>}
           {gps.error && <span className="rounded-md bg-rose-950/80 px-2 py-1 text-[10px] text-rose-200">{gps.error}</span>}
         </div>
 
+        {/* 직업 (하루 한 번 선택, 확정되면 잠금) */}
         <div className="pointer-events-auto mt-2 grid grid-cols-3 gap-2">
           {JOB_ORDER.map((id) => {
             const job = JOBS[id];
             const sel = state.todayJob === id;
+            const locked = !!state.todayJob;
             return (
               <button
                 key={id}
-                onClick={() => dispatch({ type: 'CHOOSE_JOB', job: id })}
-                className={`rounded-full border px-2 py-1 text-center text-[11px] backdrop-blur transition active:scale-95 ${sel ? 'border-amber-400 bg-amber-400/20' : 'border-white/20 bg-black/40'}`}
+                onClick={() => chooseJob(id)}
+                disabled={locked && !sel}
+                className={`rounded-full border px-2 py-1 text-center text-[11px] backdrop-blur transition active:scale-95 disabled:opacity-35 ${sel ? 'border-amber-400 bg-amber-400/20' : 'border-white/20 bg-black/40'}`}
               >
                 <span className="mr-1">{job.emoji}</span>
                 <span className={sel ? job.accent : 'text-slate-200'}>{job.name}</span>
@@ -365,10 +414,23 @@ export default function MapView() {
             );
           })}
         </div>
+        {state.todayJob && (
+          <div className="mt-1 text-center text-[10px] text-slate-400">🔒 오늘은 {JOBS[state.todayJob].name} 확정 · 다음날 변경 가능</div>
+        )}
       </div>
 
+      {/* 자유 시점일 때 내 위치 복귀 */}
+      {freeLook && (
+        <button
+          onClick={recenter}
+          className="absolute right-3 top-44 z-10 rounded-full bg-slate-900/85 px-3 py-2 text-xs font-semibold shadow-lg backdrop-blur active:scale-95"
+        >
+          🎯 내 위치
+        </button>
+      )}
+
       {/* 인카운터 카드 */}
-      {nearby && (
+      {nearby && !attempt && (
         <div className="absolute inset-x-3 bottom-40 rounded-2xl border border-white/15 bg-slate-900/90 p-3 shadow-lg backdrop-blur">
           <div className="flex items-center justify-between">
             <div>
@@ -391,7 +453,7 @@ export default function MapView() {
               <span className="rounded-lg bg-slate-700 px-3 py-2 text-xs text-slate-300">{nearby.label}</span>
             ) : (
               <button
-                onClick={doAction}
+                onClick={startAction}
                 disabled={nearby.disabled}
                 className={`rounded-lg px-4 py-2 text-sm font-bold active:scale-95 disabled:opacity-40 ${nearby.kind === 'raid' ? (nearby.revenge ? 'bg-rose-500 text-white' : 'bg-amber-400 text-slate-900') : 'bg-emerald-500 text-slate-900'}`}
               >
@@ -402,10 +464,44 @@ export default function MapView() {
         </div>
       )}
 
+      {/* 약탈/간파 시도 프로세스 */}
+      {attempt && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/55">
+          <div className="w-64 rounded-2xl border border-white/15 bg-slate-900/95 p-5 text-center shadow-xl">
+            <div className="text-sm text-slate-400">{attempt.kind === 'raid' ? '약탈 시도' : '간파 시도'}</div>
+            <div className="mt-1 text-base font-semibold">{attemptBot?.hidden ? '🥷 은신 신호' : attemptBot?.name}</div>
+            {attempt.phase === 'rolling' && (
+              <>
+                <div className="mx-auto mt-4 h-10 w-10 animate-spin rounded-full border-4 border-slate-600 border-t-amber-400" />
+                <div className="mt-3 text-sm text-slate-300">시도 중…</div>
+              </>
+            )}
+            {attempt.phase === 'success' && (
+              <>
+                <div className="mt-4 text-4xl">🎉</div>
+                <div className="mt-1 text-lg font-bold text-emerald-300">성공!</div>
+                {attempt.kind === 'raid' ? (
+                  <div className="font-mono text-amber-300">+{attempt.amount.toLocaleString()}</div>
+                ) : (
+                  <div className="text-xs text-slate-400">명단에 등록 + 노출</div>
+                )}
+              </>
+            )}
+            {attempt.phase === 'fail' && (
+              <>
+                <div className="mt-4 text-4xl">💨</div>
+                <div className="mt-1 text-lg font-bold text-rose-300">실패…</div>
+                <div className="text-xs text-slate-400">{attempt.kind === 'raid' ? '놓쳤다 — 본인 노출' : '은신을 놓쳤다'}</div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 하단 컨트롤 */}
       <div className="absolute inset-x-0 bottom-20 flex items-center justify-between px-6">
         <div className="flex h-14 w-14 flex-col items-center justify-center rounded-full border-2 border-amber-400/70 bg-black/50 backdrop-blur">
-          <span className="text-xl leading-none">{myFaction === 'dog' ? '🐕' : '🐈'}</span>
+          <span className="text-xl leading-none">{factionEmoji}</span>
           <span className="text-[10px] font-bold text-amber-300">Lv{state.level}</span>
         </div>
 
@@ -444,14 +540,10 @@ export default function MapView() {
               <button onClick={() => setMenuOpen(false)} className="text-slate-400">닫기 ✕</button>
             </div>
             {!gps.active && (
-              <button onClick={() => { gps.start(); compass.request(); }} className="mb-3 w-full rounded-lg bg-amber-400 py-2 text-xs font-bold text-slate-900">
-                📍 GPS·나침반 켜기
-              </button>
+              <button onClick={() => { gps.start(); compass.request(); }} className="mb-3 w-full rounded-lg bg-amber-400 py-2 text-xs font-bold text-slate-900">📍 GPS·나침반 켜기</button>
             )}
             {compass.needsPermission && (
-              <button onClick={() => compass.request()} className="mb-3 w-full rounded-lg border border-sky-700 py-2 text-xs text-sky-300">
-                🧭 나침반 권한 요청 (iOS)
-              </button>
+              <button onClick={() => compass.request()} className="mb-3 w-full rounded-lg border border-sky-700 py-2 text-xs text-sky-300">🧭 나침반 권한 요청 (iOS)</button>
             )}
             <LogList events={state.log.slice(0, 8)} />
             <div className="mt-4 flex gap-2">

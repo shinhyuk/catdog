@@ -59,7 +59,7 @@ export interface Exposure {
 
 export interface RaidEvent {
   day: number;
-  kind: 'i-raided' | 'i-got-raided' | 'commission';
+  kind: 'i-raided' | 'i-got-raided' | 'commission' | 'raid-fail' | 'scout-fail';
   fromName: string;
   toName: string;
   amount: number;

@@ -20,3 +20,20 @@ body {
     'Noto Sans KR', sans-serif;
   -webkit-tap-highlight-color: transparent;
 }
+
+/* 맵 위 캐릭터 마커: 통통 튀는 애니메이션 */
+@keyframes cdBounce {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-5px) scale(1.04);
+  }
+}
+.cd-bounce {
+  animation: cdBounce 1.3s ease-in-out infinite;
+}
+.cd-bot-bounce {
+  animation: cdBounce 1.9s ease-in-out infinite;
+}
