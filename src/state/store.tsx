@@ -17,6 +17,8 @@ export type Action =
   | { type: 'WALK'; steps: number }
   | { type: 'SCOUT_REGISTER'; botId: string }
   | { type: 'RAID'; botId: string }
+  | { type: 'RAID_FAIL'; botId: string }
+  | { type: 'DETECT_FAIL'; botId: string }
   | { type: 'INVEST_SKILL'; job: JobId; skillId: string }
   | { type: 'NEXT_DAY' }
   | { type: 'RESET_SEASON' }
@@ -40,6 +42,8 @@ function reducer(state: GameState, action: Action): GameState {
     }
 
     case 'CHOOSE_JOB': {
+      // 직업은 하루 한 번만. 이미 정했으면 다음 날까지 잠금.
+      if (state.todayJob) return state;
       return { ...state, todayJob: action.job };
     }
 
@@ -169,6 +173,45 @@ function reducer(state: GameState, action: Action): GameState {
         };
       }
       return next;
+    }
+
+    case 'RAID_FAIL': {
+      const bot = state.bots.find((b) => b.id === action.botId);
+      if (!bot) return state;
+      return {
+        ...state,
+        todayRaids: state.todayRaids + 1,
+        // 실패하면 본인이 노출된다
+        exposures: [
+          ...state.exposures.filter((e) => e.subjectId !== 'me'),
+          { subjectId: 'me', reason: 'raided', minutesLeft: BALANCE.raid.FAIL_EXPOSE_MIN },
+        ],
+        log: log(state, {
+          day: state.day,
+          kind: 'raid-fail',
+          fromName: '나(강탈)',
+          toName: bot.name,
+          amount: 0,
+          note: '약탈 실패 — 노출됨',
+        }),
+      };
+    }
+
+    case 'DETECT_FAIL': {
+      const bot = state.bots.find((b) => b.id === action.botId);
+      if (!bot) return state;
+      return {
+        ...state,
+        todayScouts: state.todayScouts + 1,
+        log: log(state, {
+          day: state.day,
+          kind: 'scout-fail',
+          fromName: '나(정찰)',
+          toName: '은신 신호',
+          amount: 0,
+          note: '간파 실패 — 놓침',
+        }),
+      };
     }
 
     case 'INVEST_SKILL': {

@@ -35,3 +35,17 @@ export function commission(robbedAmount: number, rng: Rng = Math.random): number
   const rate = lerp(COMMISSION_MIN, COMMISSION_MAX, rng());
   return Math.floor(robbedAmount * rate);
 }
+
+/** 강탈 시도 성공 확률 (맵 인카운터 프로세스용) */
+export function raidSuccessChance(opts: { revenge?: boolean; selfExposed?: boolean }): number {
+  const { BASE_SUCCESS, REVENGE_BONUS, SELF_EXPOSED_PENALTY } = BALANCE.raid;
+  let p = BASE_SUCCESS;
+  if (opts.revenge) p += REVENGE_BONUS;
+  if (opts.selfExposed) p -= SELF_EXPOSED_PENALTY;
+  return clamp(p, 0.05, 0.95);
+}
+
+/** 은신 간파 성공 확률 */
+export function detectSuccessChance(): number {
+  return BALANCE.raid.DETECT_BASE_SUCCESS;
+}

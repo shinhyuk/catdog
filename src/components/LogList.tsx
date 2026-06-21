@@ -4,6 +4,8 @@ const ICON: Record<RaidEvent['kind'], string> = {
   'i-raided': '⚔️',
   'i-got-raided': '💢',
   commission: '💰',
+  'raid-fail': '❌',
+  'scout-fail': '❌',
 };
 
 export default function LogList({ events }: { events: RaidEvent[] }) {
@@ -24,14 +26,18 @@ export default function LogList({ events }: { events: RaidEvent[] }) {
                 {e.note && <span className="text-slate-500"> · {e.note}</span>}
               </span>
             </span>
-            <span
-              className={`font-mono font-semibold ${
-                e.kind === 'i-got-raided' ? 'text-rose-300' : 'text-amber-300'
-              }`}
-            >
-              {e.kind === 'i-got-raided' ? '-' : '+'}
-              {e.amount.toLocaleString()}
-            </span>
+            {e.amount > 0 ? (
+              <span
+                className={`font-mono font-semibold ${
+                  e.kind === 'i-got-raided' ? 'text-rose-300' : 'text-amber-300'
+                }`}
+              >
+                {e.kind === 'i-got-raided' ? '-' : '+'}
+                {e.amount.toLocaleString()}
+              </span>
+            ) : (
+              <span className="font-mono text-xs text-slate-500">실패</span>
+            )}
           </li>
         ))}
       </ul>
