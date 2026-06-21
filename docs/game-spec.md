@@ -72,6 +72,20 @@ GPS 기반 출퇴근형 모바일 PvP 게임. 걸으면 자산이 쌓이고, 개
 3. 봇 갱신 + 능동 봇이 보이는 자산을 노려 강탈(새 leak 생성).
 4. 직업 선택 해제, 명단 초기화 후 아군 정찰자가 일부를 다시 채움.
 
+## 실제 GPS 지도 (Phase 1.5)
+
+실제 길 위에서 플레이하도록 확장. 수치는 `src/config/balance.ts`의 `geo` 섹션.
+
+- **지도**: MapLibre GL + OpenFreeMap(`STYLE_URL`, 키 불필요). 실제 거리를 `MAP_PITCH`만큼 기울여 3D로.
+- **내 위치**: `navigator.geolocation.watchPosition`. 이동 거리(haversine) → `STEPS_PER_METER`로 걸음 환산.
+  GPS 튐은 `MIN_STEP_M`~`MAX_STEP_M` 밖이면 무시.
+- **바라보는 방향**: 나침반(`DeviceOrientation`, iOS는 권한 제스처) → 지도 bearing 회전.
+  나침반 없으면 GPS 이동방향 fallback.
+- **호구 배치**: 봇을 내 주변 `BOT_SPAWN_MIN_M`~`BOT_SPAWN_MAX_M`에 흩뿌림. 매일(하루 넘김) 재배치.
+- **상호작용**: `ENCOUNTER_RANGE_M` 안에 들어오면 정찰/약탈 카드.
+- **폴백**: GPS 거부/PC에선 "걷기" 버튼으로 현재 방향으로 `SIM_SPEED_M_PER_S` 시뮬 이동.
+- 구현: `src/features/map/MapView.tsx`, `useGeo.ts`(센서 훅), `geo.ts`(좌표 계산).
+
 ## 시즌
 
 종료 시 레벨·스킬포인트·랭크·자산·명단 리셋. 진영·계정은 유지.
