@@ -6,30 +6,30 @@ import { levelProgress } from '../../game/leveling';
 import { robberRaid } from '../../game/theft';
 import type { Bot, GameState } from '../../types';
 import {
-  drawGround,
-  drawRoad,
+  drawWorld,
+  drawRing,
   drawTree,
   drawCritter,
+  project,
   roadOffsetX,
+  type Cam,
 } from './sprites';
+import BottomNav from '../../components/BottomNav';
 import LogList from '../../components/LogList';
-import ProgressBar from '../../components/ProgressBar';
 
 const M = BALANCE.map;
 
 interface NearbyAction {
   bot: Bot;
   revenge: boolean;
-  /** 실행 가능한 액션 종류 */
   kind: 'register' | 'detect' | 'raid' | 'info' | 'none';
   label: string;
   disabled: boolean;
   hint?: string;
 }
 
-/** 도로를 따라 i번째 봇이 놓인 거리 */
 const botBaseDist = (i: number) => (i + 1) * M.BOT_SPACING;
-const botSide = (i: number) => (i % 2 === 0 ? -16 : 16);
+const botSide = (i: number) => (i % 2 === 0 ? -20 : 20);
 
 function actionFor(state: GameState, bot: Bot): NearbyAction {
   const revenge = state.leaks.some((l) => l.raiderId === bot.id);
@@ -38,26 +38,23 @@ function actionFor(state: GameState, bot: Bot): NearbyAction {
   if (!job) return { ...base, kind: 'none', label: '직업 먼저', disabled: true, hint: '오늘 직업을 골라야 한다' };
 
   if (job === 'scout') {
-    const scoutFull = state.todayScouts >= BALANCE.limits.MAX_SCOUTS_PER_DAY;
+    const full = state.todayScouts >= BALANCE.limits.MAX_SCOUTS_PER_DAY;
     if (bot.hidden)
-      return { ...base, kind: 'detect', label: '간파', disabled: scoutFull, hint: scoutFull ? '오늘 정찰 소진' : '은신을 꿰뚫어 명단에 올린다' };
+      return { ...base, kind: 'detect', label: '간파', disabled: full, hint: full ? '오늘 정찰 소진' : '은신을 꿰뚫어 명단에 등록' };
     if (state.list.some((t) => t.botId === bot.id))
       return { ...base, kind: 'info', label: '명단에 있음', disabled: true };
-    return { ...base, kind: 'register', label: '명단 등록', disabled: scoutFull, hint: scoutFull ? '오늘 정찰 소진' : '소액 절도 + 노출' };
+    return { ...base, kind: 'register', label: '명단 등록', disabled: full, hint: full ? '오늘 정찰 소진' : '소액 절도 + 노출' };
   }
-
   if (job === 'robber') {
-    const raidFull = state.todayRaids >= BALANCE.limits.MAX_RAIDS_PER_DAY;
+    const full = state.todayRaids >= BALANCE.limits.MAX_RAIDS_PER_DAY;
     return {
       ...base,
       kind: 'raid',
       label: revenge ? '복수' : '강탈',
-      disabled: raidFull,
-      hint: raidFull ? '오늘 강탈 소진' : `예상 ~${robberRaid(bot.visibleAssets).amount.toLocaleString()}`,
+      disabled: full,
+      hint: full ? '오늘 강탈 소진' : `예상 ~${robberRaid(bot.visibleAssets).amount.toLocaleString()}`,
     };
   }
-
-  // stealth
   return { ...base, kind: 'info', label: '은신 중 — 지나친다', disabled: true };
 }
 
@@ -66,7 +63,6 @@ export default function MapView() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // rAF에서 최신 상태/디스패치를 읽기 위한 ref
   const stateRef = useRef(state);
   stateRef.current = state;
 
@@ -81,32 +77,27 @@ export default function MapView() {
 
   const [walking, setWalking] = useState(false);
   const [nearbyId, setNearbyId] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const myFaction = state.faction ?? 'dog';
   const LAP = Math.max(1, state.bots.length) * M.BOT_SPACING;
 
-  // 봇 목록 중 현재 직업이 볼 수 있는 대상
-  function visibleBots(s: GameState): Bot[] {
-    if (s.todayJob === 'scout') return s.bots; // 정찰자는 은신도 보임(간파)
-    return s.bots.filter((b) => !b.hidden);
-  }
+  const visibleBots = (s: GameState): Bot[] =>
+    s.todayJob === 'scout' ? s.bots : s.bots.filter((b) => !b.hidden);
 
-  // 현재 위치에서 상호작용 가능한 가장 가까운 봇
   function computeNearby(s: GameState): NearbyAction | null {
     const phase = ((charDist.current % LAP) + LAP) % LAP;
-    let best: { idx: number; bot: Bot; delta: number } | null = null;
+    let best: { bot: Bot; delta: number } | null = null;
     s.bots.forEach((bot, i) => {
       if (s.todayJob !== 'scout' && bot.hidden) return;
       let delta = phase - botBaseDist(i);
-      // 루프 경로이므로 가장 가까운 주기로 보정
       if (delta > LAP / 2) delta -= LAP;
       if (delta < -LAP / 2) delta += LAP;
       if (Math.abs(delta) <= M.ENCOUNTER_RANGE) {
-        if (!best || Math.abs(delta) < Math.abs(best.delta)) best = { idx: i, bot, delta };
+        if (!best || Math.abs(delta) < Math.abs(best.delta)) best = { bot, delta };
       }
     });
-    if (!best) return null;
-    return actionFor(s, (best as { bot: Bot }).bot);
+    return best ? actionFor(s, (best as { bot: Bot }).bot) : null;
   }
 
   useEffect(() => {
@@ -136,49 +127,59 @@ export default function MapView() {
       const { w, h } = sizeRef.current;
       if (w === 0) return;
       const s = stateRef.current;
-      const centerX = w / 2;
-      const charScreenY = h * 0.62;
-      const camY = charDist.current - charScreenY;
+      const cam: Cam = { w, h, camX: roadOffsetX(charDist.current), camY: charDist.current };
 
-      drawGround(ctx, w, h, camY);
-      drawRoad(ctx, h, camY, centerX);
+      drawWorld(ctx, cam);
 
-      // 길가 나무 (월드 y 주기적으로)
-      for (let wy = Math.floor(camY / 160) * 160 - 160; wy < camY + h + 160; wy += 160) {
-        const cx = centerX + roadOffsetX(wy);
-        drawTree(ctx, cx - 90, wy - camY);
-        drawTree(ctx, cx + 90, wy - camY + 80);
+      // 길가 나무
+      for (let wy = charDist.current - 120; wy < charDist.current + 1100; wy += 130) {
+        const cx = roadOffsetX(wy);
+        const pl = project(cx - 150, wy, cam);
+        const pr = project(cx + 150, wy, cam);
+        if (pl && pl.sx > -40 && pl.sx < w + 40) drawTree(ctx, pl);
+        if (pr && pr.sx > -40 && pr.sx < w + 40) drawTree(ctx, pr);
       }
 
-      // 봇들 (보이는 주기 모두)
+      drawRing(ctx, cam, M.ENCOUNTER_RANGE);
+
+      // 그릴 스프라이트 모으기 (먼 것부터 그리도록 sy 오름차순)
+      type Item = { sy: number; draw: () => void };
+      const items: Item[] = [];
+
       const lapNow = Math.floor(charDist.current / LAP);
       visibleBots(s).forEach((bot) => {
         const i = s.bots.indexOf(bot);
+        const revenge = s.leaks.some((l) => l.raiderId === bot.id);
         for (let k = lapNow - 1; k <= lapNow + 1; k++) {
-          const worldY = botBaseDist(i) + k * LAP;
-          const sy = worldY - camY;
-          if (sy < -60 || sy > h + 60) continue;
-          const sx = centerX + roadOffsetX(worldY) + botSide(i);
-          const revenge = s.leaks.some((l) => l.raiderId === bot.id);
-          drawCritter(ctx, sx, sy, bot.faction, {
-            frame: 0,
-            u: 3.5,
-            enemy: true,
-            revenge,
-            dim: bot.hidden,
+          const wy = botBaseDist(i) + k * LAP;
+          const wx = roadOffsetX(wy) + botSide(i);
+          const p = project(wx, wy, cam);
+          if (!p || p.scale < 0.12 || p.scale > 1.8) continue;
+          if (p.sy < -20 || p.sy > h + 40) continue;
+          const u = Math.max(1.6, Math.min(7, 5 * p.scale));
+          items.push({
+            sy: p.sy,
+            draw: () => {
+              drawCritter(ctx, p.sx, p.sy, bot.faction, { frame: 0, u, enemy: true, revenge, dim: bot.hidden });
+              if (bot.hidden) {
+                ctx.fillStyle = '#7dd3fc';
+                ctx.font = `bold ${Math.round(10 * p.scale + 6)}px system-ui`;
+                ctx.textAlign = 'center';
+                ctx.fillText('?', p.sx, p.sy - 11 * u);
+              }
+            },
           });
-          if (bot.hidden) {
-            ctx.fillStyle = '#7dd3fc';
-            ctx.font = 'bold 14px system-ui';
-            ctx.textAlign = 'center';
-            ctx.fillText('?', sx, sy - 44);
-          }
         }
       });
 
-      // 플레이어
-      const psx = centerX + roadOffsetX(charDist.current);
-      drawCritter(ctx, psx, charScreenY, myFaction, { frame: frame.current, u: 4.5 });
+      // 플레이어 (화면 중앙 발밑)
+      const p0 = project(cam.camX, cam.camY, cam)!;
+      items.push({
+        sy: p0.sy,
+        draw: () => drawCritter(ctx, p0.sx, p0.sy, myFaction, { frame: frame.current, u: 5.2 }),
+      });
+
+      items.sort((a, b) => a.sy - b.sy).forEach((it) => it.draw());
     };
 
     const loop = (ts: number) => {
@@ -201,7 +202,6 @@ export default function MapView() {
         }
       }
 
-      // 근처 호구 감지 + 자동 멈춤
       const near = computeNearby(s);
       const id = near?.bot.id ?? null;
       if (id !== nearbyRef.current) {
@@ -225,7 +225,6 @@ export default function MapView() {
       cancelAnimationFrame(raf);
       ro.disconnect();
     };
-    // 마운트 시 1회만 설정 (내부는 ref로 최신값 접근)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -245,21 +244,61 @@ export default function MapView() {
   };
 
   const progress = levelProgress(state);
+  const leakTotal = state.leaks.reduce((s, l) => s + (l.total - l.drained), 0);
+  const exposed = state.exposures.some((e) => e.subjectId === 'me');
 
   return (
-    <div className="space-y-3">
-      {/* 직업 칩 + 경험치 */}
-      <section>
-        <div className="mb-2 flex items-center justify-between text-xs text-slate-400">
-          <span>오늘 직업</span>
-          <span>
-            Lv {state.level} ·{' '}
-            {state.level >= BALANCE.MAX_LEVEL
-              ? '만렙'
-              : `다음까지 ${Math.max(0, BALANCE.expToNext(state.level) - state.exp).toLocaleString()}`}
-          </span>
+    <div ref={wrapRef} className="fixed inset-0 mx-auto max-w-md overflow-hidden bg-[#1b2347] select-none">
+      <canvas ref={canvasRef} className="absolute inset-0 block h-full w-full" />
+
+      {/* ── 상단 HUD ── */}
+      <div className="absolute inset-x-0 top-0 bg-gradient-to-b from-black/55 to-transparent p-3">
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-2 rounded-full bg-black/35 px-3 py-1.5 backdrop-blur">
+            <span className="text-lg">{myFaction === 'dog' ? '🐕' : '🐈'}</span>
+            <div className="leading-tight">
+              <div className="text-xs font-semibold">시즌 {state.season} · Day {state.day}</div>
+              <div className="text-[10px] text-slate-300">
+                Lv {state.level}
+                {state.level >= BALANCE.MAX_LEVEL ? ' (만렙)' : ''}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="rounded-full bg-black/35 px-3 py-1.5 text-right backdrop-blur">
+              <div className="text-[10px] text-slate-300">자산</div>
+              <div className="font-mono text-sm font-bold text-amber-300">{state.assets.toLocaleString()}</div>
+            </div>
+            <button
+              onClick={() => setMenuOpen((o) => !o)}
+              className="h-9 w-9 rounded-full bg-black/35 text-lg backdrop-blur active:scale-95"
+            >
+              ≡
+            </button>
+          </div>
         </div>
-        <div className="grid grid-cols-3 gap-2">
+
+        {/* 경험치 바 */}
+        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-black/40">
+          <div className="h-full bg-amber-400" style={{ width: `${Math.round(progress * 100)}%` }} />
+        </div>
+
+        {/* 상태 배지 */}
+        {(leakTotal > 0 || exposed) && (
+          <div className="mt-2 flex gap-2">
+            {leakTotal > 0 && (
+              <span className="rounded-md bg-rose-950/80 px-2 py-1 text-[10px] text-rose-200">
+                누수 {leakTotal.toLocaleString()}
+              </span>
+            )}
+            {exposed && (
+              <span className="rounded-md bg-amber-950/80 px-2 py-1 text-[10px] text-amber-200">⚠️ 노출됨</span>
+            )}
+          </div>
+        )}
+
+        {/* 직업 칩 */}
+        <div className="mt-2 grid grid-cols-3 gap-2">
           {JOB_ORDER.map((id) => {
             const job = JOBS[id];
             const sel = state.todayJob === id;
@@ -267,145 +306,126 @@ export default function MapView() {
               <button
                 key={id}
                 onClick={() => dispatch({ type: 'CHOOSE_JOB', job: id })}
-                className={`rounded-xl border py-2 text-center text-xs transition active:scale-95 ${
-                  sel ? 'border-amber-400 bg-amber-400/10' : 'border-slate-700 bg-slate-800/40'
+                className={`rounded-full border px-2 py-1 text-center text-[11px] backdrop-blur transition active:scale-95 ${
+                  sel ? 'border-amber-400 bg-amber-400/20' : 'border-white/20 bg-black/35'
                 }`}
               >
                 <span className="mr-1">{job.emoji}</span>
-                <span className={sel ? job.accent : 'text-slate-300'}>{job.name}</span>
+                <span className={sel ? job.accent : 'text-slate-200'}>{job.name}</span>
               </button>
             );
           })}
         </div>
-        <ProgressBar value={progress} className="mt-2" />
-      </section>
+      </div>
 
-      {/* 맵 캔버스 */}
-      <div
-        ref={wrapRef}
-        className="relative h-[56vh] w-full overflow-hidden rounded-2xl border border-slate-800 bg-[#2f5d34]"
-      >
-        <canvas ref={canvasRef} className="block h-full w-full" />
-
-        {/* 노출/누수 오버레이 배지 */}
-        <div className="pointer-events-none absolute left-2 top-2 space-y-1">
-          {state.leaks.length > 0 && (
-            <span className="rounded-md bg-rose-950/80 px-2 py-1 text-[10px] text-rose-200">
-              누수 {state.leaks.reduce((s, l) => s + (l.total - l.drained), 0).toLocaleString()}
-            </span>
-          )}
-          {state.exposures.some((e) => e.subjectId === 'me') && (
-            <span className="block rounded-md bg-amber-950/80 px-2 py-1 text-[10px] text-amber-200">
-              ⚠️ 노출됨
-            </span>
-          )}
-        </div>
-
-        {/* 근처 호구 카드 */}
-        {nearby && (
-          <div className="absolute inset-x-2 bottom-2 rounded-xl border border-slate-700 bg-slate-900/95 p-3 backdrop-blur">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="flex items-center gap-1.5 text-sm font-semibold">
-                  {nearby.bot.hidden ? '🥷 은신 신호' : `${JOBS[nearby.bot.job].emoji} ${nearby.bot.name}`}
-                  {nearby.revenge && (
-                    <span className="rounded-full bg-rose-600/80 px-1.5 text-[10px]">복수</span>
-                  )}
-                </div>
-                <div className="text-xs text-slate-400">
-                  {nearby.bot.hidden ? (
-                    <span className="text-sky-300">간파해야 정체가 드러난다</span>
-                  ) : (
-                    <>
-                      보이는 자산{' '}
-                      <span className="font-mono text-slate-300">
-                        {nearby.bot.visibleAssets.toLocaleString()}
-                      </span>
-                      {nearby.hint && <span className="text-slate-500"> · {nearby.hint}</span>}
-                    </>
-                  )}
-                </div>
+      {/* ── 인카운터 카드 ── */}
+      {nearby && (
+        <div className="absolute inset-x-3 bottom-40 rounded-2xl border border-white/15 bg-slate-900/90 p-3 shadow-lg backdrop-blur">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="flex items-center gap-1.5 text-sm font-semibold">
+                {nearby.bot.hidden ? '🥷 은신 신호' : `${JOBS[nearby.bot.job].emoji} ${nearby.bot.name}`}
+                {nearby.revenge && <span className="rounded-full bg-rose-600/80 px-1.5 text-[10px]">복수</span>}
               </div>
-              {nearby.kind === 'info' || nearby.kind === 'none' ? (
-                <span className="rounded-lg bg-slate-700 px-3 py-2 text-xs text-slate-300">
-                  {nearby.label}
-                </span>
-              ) : (
-                <button
-                  onClick={doAction}
-                  disabled={nearby.disabled}
-                  className={`rounded-lg px-4 py-2 text-sm font-bold active:scale-95 disabled:opacity-40 ${
-                    nearby.kind === 'raid'
-                      ? nearby.revenge
-                        ? 'bg-rose-500 text-white'
-                        : 'bg-amber-400 text-slate-900'
-                      : 'bg-emerald-500 text-slate-900'
-                  }`}
-                >
-                  {nearby.label}
-                </button>
-              )}
+              <div className="text-xs text-slate-400">
+                {nearby.bot.hidden ? (
+                  <span className="text-sky-300">간파해야 정체가 드러난다</span>
+                ) : (
+                  <>
+                    보이는 자산 <span className="font-mono text-slate-300">{nearby.bot.visibleAssets.toLocaleString()}</span>
+                    {nearby.hint && <span className="text-slate-500"> · {nearby.hint}</span>}
+                  </>
+                )}
+              </div>
             </div>
+            {nearby.kind === 'info' || nearby.kind === 'none' ? (
+              <span className="rounded-lg bg-slate-700 px-3 py-2 text-xs text-slate-300">{nearby.label}</span>
+            ) : (
+              <button
+                onClick={doAction}
+                disabled={nearby.disabled}
+                className={`rounded-lg px-4 py-2 text-sm font-bold active:scale-95 disabled:opacity-40 ${
+                  nearby.kind === 'raid'
+                    ? nearby.revenge
+                      ? 'bg-rose-500 text-white'
+                      : 'bg-amber-400 text-slate-900'
+                    : 'bg-emerald-500 text-slate-900'
+                }`}
+              >
+                {nearby.label}
+              </button>
+            )}
           </div>
-        )}
-      </div>
-
-      {/* 걷기 / 다음날 */}
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          onClick={toggleWalk}
-          className={`rounded-xl py-3 text-sm font-bold active:scale-95 ${
-            walking ? 'bg-rose-500/90 text-white' : 'bg-amber-400 text-slate-900'
-          }`}
-        >
-          {walking ? '⏸ 멈추기' : '🚶 걷기'}
-        </button>
-        <button
-          onClick={() => dispatch({ type: 'NEXT_DAY' })}
-          className="rounded-xl bg-slate-700 py-3 text-sm font-bold active:scale-95 hover:bg-slate-600"
-        >
-          🌅 다음 날로
-        </button>
-      </div>
-      <p className="text-center text-xs text-slate-500">
-        길 따라 걸으면 경험치·자산이 쌓인다. 호구를 만나면 자동으로 멈춰 정찰/약탈할 수 있다.
-      </p>
-
-      <LogList events={state.log.slice(0, 5)} />
-      <DevControls />
-    </div>
-  );
-}
-
-function DevControls() {
-  const { dispatch } = useGame();
-  const [open, setOpen] = useState(false);
-  return (
-    <section className="pt-1">
-      <button onClick={() => setOpen((o) => !o)} className="text-xs text-slate-600 underline">
-        개발용 도구 {open ? '접기' : '펼치기'}
-      </button>
-      {open && (
-        <div className="mt-2 flex gap-2">
-          <button
-            onClick={() => {
-              if (confirm('시즌을 리셋할까? 레벨·스킬·자산이 초기화된다 (진영은 유지).'))
-                dispatch({ type: 'RESET_SEASON' });
-            }}
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs"
-          >
-            시즌 리셋
-          </button>
-          <button
-            onClick={() => {
-              if (confirm('전체 초기화(진영 포함)?')) dispatch({ type: 'HARD_RESET' });
-            }}
-            className="rounded-lg border border-rose-900 px-3 py-1.5 text-xs text-rose-300"
-          >
-            전체 초기화
-          </button>
         </div>
       )}
-    </section>
+
+      {/* ── 하단 컨트롤 (맵 위에 떠 있음) ── */}
+      <div className="absolute inset-x-0 bottom-20 flex items-center justify-between px-6">
+        {/* 프로필 */}
+        <div className="flex h-14 w-14 flex-col items-center justify-center rounded-full border-2 border-amber-400/70 bg-black/45 backdrop-blur">
+          <span className="text-xl leading-none">{myFaction === 'dog' ? '🐕' : '🐈'}</span>
+          <span className="text-[10px] font-bold text-amber-300">Lv{state.level}</span>
+        </div>
+
+        {/* 걷기 */}
+        <button
+          onClick={toggleWalk}
+          className={`flex h-20 w-20 flex-col items-center justify-center rounded-full text-sm font-bold shadow-lg active:scale-95 ${
+            walking ? 'bg-rose-500 text-white' : 'bg-amber-400 text-slate-900'
+          }`}
+        >
+          <span className="text-2xl leading-none">{walking ? '⏸' : '🚶'}</span>
+          {walking ? '멈추기' : '걷기'}
+        </button>
+
+        {/* 다음날 */}
+        <button
+          onClick={() => dispatch({ type: 'NEXT_DAY' })}
+          className="flex h-14 w-14 flex-col items-center justify-center rounded-full bg-slate-700/80 text-[10px] font-semibold backdrop-blur active:scale-95"
+        >
+          <span className="text-lg leading-none">🌅</span>
+          다음날
+        </button>
+      </div>
+
+      <BottomNav />
+
+      {/* ── 메뉴 패널 (로그 / 개발도구) ── */}
+      {menuOpen && (
+        <div className="absolute inset-0 z-50 bg-black/50" onClick={() => setMenuOpen(false)}>
+          <div
+            className="absolute inset-x-0 top-0 max-h-[70%] overflow-y-auto rounded-b-2xl bg-slate-900/95 p-4 backdrop-blur"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-sm font-bold">메뉴</h2>
+              <button onClick={() => setMenuOpen(false)} className="text-slate-400">
+                닫기 ✕
+              </button>
+            </div>
+            <LogList events={state.log.slice(0, 8)} />
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={() => {
+                  if (confirm('시즌을 리셋할까? 레벨·스킬·자산이 초기화된다 (진영은 유지).'))
+                    dispatch({ type: 'RESET_SEASON' });
+                }}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs"
+              >
+                시즌 리셋
+              </button>
+              <button
+                onClick={() => {
+                  if (confirm('전체 초기화(진영 포함)?')) dispatch({ type: 'HARD_RESET' });
+                }}
+                className="rounded-lg border border-rose-900 px-3 py-1.5 text-xs text-rose-300"
+              >
+                전체 초기화
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
