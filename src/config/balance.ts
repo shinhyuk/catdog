@@ -99,6 +99,30 @@ export const BALANCE = {
     /** 도로를 따라 호구 봇 사이 간격 (월드 px) */
     BOT_SPACING: 520,
   },
+
+  // ── 실제 GPS 지도 (Phase 1.5: 실위치 기반) ──────────────
+  geo: {
+    /** 호구와 상호작용 가능한 실제 거리 (미터) */
+    ENCOUNTER_RANGE_M: 25,
+    /** 봇을 내 주변 이 반경(미터) 안에 흩뿌린다 */
+    BOT_SPAWN_MIN_M: 25,
+    BOT_SPAWN_MAX_M: 160,
+    /** 실제 이동 1미터당 적립되는 걸음 수 */
+    STEPS_PER_METER: 1.3,
+    /** 시뮬(폴백) 걷기 속도 (미터/초) */
+    SIM_SPEED_M_PER_S: 1.6,
+    /** GPS 튐 무시: 한 업데이트에서 이 범위 밖 이동은 걸음 적립 제외 (미터) */
+    MIN_STEP_M: 0.8,
+    MAX_STEP_M: 30,
+    /** 지도 기울기/줌 */
+    MAP_PITCH: 60,
+    MAP_ZOOM: 18,
+    /** 키 불필요 무료 벡터 타일 스타일 */
+    STYLE_URL: 'https://tiles.openfreemap.org/styles/liberty',
+    /** GPS 못 쓸 때 시작 위치 (서울시청) */
+    FALLBACK_LAT: 37.5665,
+    FALLBACK_LNG: 126.978,
+  },
 } as const;
 
 export type Balance = typeof BALANCE;
