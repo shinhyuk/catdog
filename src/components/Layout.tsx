@@ -2,7 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useGame } from '../state/store';
 
 const TABS = [
-  { to: '/', label: '홈', icon: '🏠', end: true },
+  { to: '/', label: '맵', icon: '🗺️', end: true },
   { to: '/list', label: '명단', icon: '📋', end: false },
   { to: '/raid', label: '약탈', icon: '⚔️', end: false },
   { to: '/skills', label: '스킬', icon: '🌳', end: false },

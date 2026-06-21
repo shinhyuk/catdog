@@ -85,6 +85,20 @@ export const BALANCE = {
     DAILY_STEPS_MIN: 1500,
     DAILY_STEPS_MAX: 9000,
   },
+
+  // ── 맵/걷기 화면 페이스 (게임 느낌 = 튜닝 대상) ──────────
+  map: {
+    /** 캐릭터 이동 속도 (월드 px/초) */
+    WALK_SPEED_PX_PER_S: 95,
+    /** 이동 px당 적립되는 걸음 수 */
+    STEPS_PER_PX: 2,
+    /** 이만큼 걸음이 모이면 한 번에 WALK 디스패치 (잦은 갱신 방지) */
+    BATCH_STEPS: 60,
+    /** 호구와 상호작용 가능한 거리 (월드 px) */
+    ENCOUNTER_RANGE: 90,
+    /** 도로를 따라 호구 봇 사이 간격 (월드 px) */
+    BOT_SPACING: 520,
+  },
 } as const;
 
 export type Balance = typeof BALANCE;
