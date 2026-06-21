@@ -12,8 +12,8 @@ function Gate() {
   if (!state.faction) return <Onboarding />;
   return (
     <Routes>
+      <Route path="/" element={<MapView />} />
       <Route element={<Layout />}>
-        <Route index element={<MapView />} />
         <Route path="list" element={<ListScreen />} />
         <Route path="raid" element={<Raid />} />
         <Route path="skills" element={<Skills />} />

@@ -1,12 +1,6 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { Outlet } from 'react-router-dom';
 import { useGame } from '../state/store';
-
-const TABS = [
-  { to: '/', label: '맵', icon: '🗺️', end: true },
-  { to: '/list', label: '명단', icon: '📋', end: false },
-  { to: '/raid', label: '약탈', icon: '⚔️', end: false },
-  { to: '/skills', label: '스킬', icon: '🌳', end: false },
-];
+import BottomNav from './BottomNav';
 
 export default function Layout() {
   const { state } = useGame();
@@ -37,23 +31,7 @@ export default function Layout() {
         <Outlet />
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-10 mx-auto flex max-w-md border-t border-slate-800 bg-slate-900/95 backdrop-blur">
-        {TABS.map((t) => (
-          <NavLink
-            key={t.to}
-            to={t.to}
-            end={t.end}
-            className={({ isActive }) =>
-              `flex flex-1 flex-col items-center gap-0.5 py-2 text-xs ${
-                isActive ? 'text-amber-300' : 'text-slate-400'
-              }`
-            }
-          >
-            <span className="text-lg">{t.icon}</span>
-            {t.label}
-          </NavLink>
-        ))}
-      </nav>
+      <BottomNav />
     </div>
   );
 }
